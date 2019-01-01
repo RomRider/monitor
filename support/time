@@ -15,9 +15,16 @@
 # ----------------------------------------------------------------------------------------
 # PERIODIC TRIGGER TO MAIN LOOP
 # ----------------------------------------------------------------------------------------
-refresh_databases (){
-	while : ; do 
+refresh_databases() {
+	while :; do
 		sleep "$PREF_DATABASE_REFRESH_INTERVAL"
-		echo "REFR" > main_pipe
+		echo "REFR" >main_pipe
+	done
+}
+
+heartbeat_send() {
+	while :; do
+		sleep "15"
+		echo "BEAT" >main_pipe
 	done
 }
