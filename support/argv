@@ -78,6 +78,7 @@ usage:
 	monitor -h 	show usage information
 	monitor -R 	redact private information from logs
 	monitor -S 	silent operation (no logging)
+	monitor -c addr	create connection to bluetooth device
 	monitor -C 	clean retained messages from MQTT broker
 	monitor -E 	report scan status messages:
 				[topic path]/scan/[arrive|depart]/[start|end]
@@ -107,7 +108,7 @@ usage:
 # ----------------------------------------------------------------------------------------
 
 #REMOVE MANUFACTURER CACHE AND PUBLIC NAME CACHE FROM PREVIOUS SESSION 
-(2>&1 1>/dev/null rm ".manufacturer_cache") && echo "> removing web request caches"
+(&>/dev/null rm ".manufacturer_cache") && echo "> removing web request caches"
 
 #PROCESS ARGV OPTIONS
 OPTIND=1
@@ -125,14 +126,12 @@ PREF_REDACT=false
 PREF_SHOULD_RETAIN=false
 PREF_CLEAN_MQTT=false
 PREF_FORMAT_MQTT=false
-PREF_PUBLISH_ENVIRONMENT_MODE=false
-PREF_HEARTBEAT=false
 PREF_MQTT_REPORT_SCAN_MESSAGES=false
 PREF_SERVICE_CHECK=true
 PREF_CONFIG_DIR=''
 PREF_DISABLE_LOGGING=false
 
-while getopts "h?vfbut:EgSRcCmesadxD:" opt; do
+while getopts "h?vfbut:EgSRCmsadxD:c:" opt; do
 	case "$opt" in
 		h|\?)
 			show_help_text
@@ -145,14 +144,35 @@ while getopts "h?vfbut:EgSRcCmesadxD:" opt; do
 			echo "$VERSION"
 			exit 0
 			;;
+		c) 
+			#GET TARGET MAC ADDRESS
+			target_mac="$OPTARG"
+			
+			#REMOVE PREVIOUS PAIRINGS		
+			echo "> removing previous pairings to $target_mac"
+			(echo -e "remove $target_mac" | bluetoothctl &>/dev/null)
+
+			#DEBUG ECHO
+			echo "> creating connection to $target_mac..."
+			echo "> witihin 5 seconds, please set $target_mac to discoverable..."
+			
+			#WAIT 5 SECONDS FOR DISCOVERABLE MODE
+			sleep 5
+
+			#CREATE CONNECTION
+			return_data=$(sudo hcitool cc $target_mac 2>&1 && sudo hcitool auth $target_mac 2>&1 && sudo hcitool dc $target_mac 2>&1)
+
+			#ERROR REPORTING
+			[[ $return_data =~ .*error.* ]] && echo "> error: connection to $target_mac failed" || echo "> connection created to $target_mac"
+
+			exit 0
+			;;
 		C)  
 			PREF_CLEAN_MQTT=true && echo "> cleaning retained messages on broker"
 			;;
 		E)  PREF_MQTT_REPORT_SCAN_MESSAGES=true  && echo "> publishing MQTT .../scan/[arrival|depart]/[start|end]"
 			;;
 		s)  PREF_MQTT_SINGLE_TOPIC_MODE=true  && echo "> publishing all MQTT presence messages to \$mqtt_topicpath/\$mqtt_publisher_identity"
-			;;
-		e)  PREF_PUBLISH_ENVIRONMENT_MODE=true  && echo "> publishing bluetooth environment every $PREF_ENVIRONMENTAL_REPORT_INTERVAL seconds"
 			;;
 		x)  PREF_SHOULD_RETAIN=true  && echo "> retaining mqtt status reports"
 			;;
@@ -184,11 +204,9 @@ while getopts "h?vfbut:EgSRcCmesadxD:" opt; do
 			;;
 		a)  PREF_REPORT_ALL_MODE=true 	&& echo "> report all scan results mode enabled"
 			;;
-		m)  PREF_HEARTBEAT=true 	&& echo "> send heartbeat signal"
-			;;
-                D)  PREF_CONFIG_DIR=$OPTARG && echo "> using custom config directory [$PREF_CONFIG_DIR]"
-                    [ ! -d "$PREF_CONFIG_DIR" ] && echo "> error: config directory [$PREF_CONFIG_DIR] doesn't exist" && exit 1
-                        ;;
+        D)  PREF_CONFIG_DIR=$OPTARG && echo "> using custom config directory [$PREF_CONFIG_DIR]"
+            [ ! -d "$PREF_CONFIG_DIR" ] && echo "> error: config directory [$PREF_CONFIG_DIR] doesn't exist" && exit 1
+                ;;
 		*)	echo "> unknown or depreciated argument: $opt"
 	esac
 done

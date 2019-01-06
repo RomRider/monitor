@@ -25,7 +25,7 @@
 # ----------------------------------------------------------------------------------------
 
 #VERSION NUMBER
-export version=0.1.771
+export version=0.1.799
 
 #CAPTURE ARGS IN VAR TO USE IN SOURCED FILE
 export RUNTIME_ARGS=("$@")
@@ -130,6 +130,9 @@ done
 # POPULATE MAIN DEVICE ARRAY
 # ----------------------------------------------------------------------------------------
 
+#LIST CONNECTED DEVICES
+previously_connected_devices=$(echo "quit" | bluetoothctl | grep -Eio "Device ([0-9A-F]{2}:){5}[0-9A-F]{2}" | sed 's/Device //g')
+
 #POPULATE KNOWN DEVICE ADDRESS
 for addr in "${known_static_addresses[@]}"; do
 
@@ -143,8 +146,15 @@ for addr in "${known_static_addresses[@]}"; do
 	pub_topic="$mqtt_topicpath/$mqtt_publisher_identity/$addr"
 	[ "$PREF_MQTT_SINGLE_TOPIC_MODE" == true ] && pub_topic="$mqtt_topicpath/$mqtt_publisher_identity { id: $addr ... }"
 
+	#CONNECTED?
+	is_connected="not previously connected"
+	[[ $previously_connected_devices =~ .*$addr.* ]] && is_connected="previously connected"
+
 	#FOR DBUGGING
-	echo "> known device: $addr will publish to: $pub_topic"
+	echo "> $addr has $is_connected to $PREF_HCI_DEVICE"
+
+	#FOR DEBUGGING
+	echo "> $addr will publish updates to: $pub_topic"
 done
 
 # ----------------------------------------------------------------------------------------
@@ -166,6 +176,37 @@ for addr in "${known_static_beacons[@]}"; do
 	#FOR DBUGGING
 	echo "> known beacon: $addr will publish to: $pub_topic"
 done
+
+# ----------------------------------------------------------------------------------------
+# ASSEMBLE RSSI LISTS
+# ----------------------------------------------------------------------------------------
+
+connectable_present_devices() {
+
+	#DEFINE LOCAL VARS
+	local this_state
+	local known_device_rssi
+
+	#ITERATE THROUGH THE KNOWN DEVICES
+	local known_addr
+	for known_addr in "${known_static_addresses[@]}"; do
+
+		#GET STATE; ONLY SCAN FOR DEVICES WITH SPECIFIC STATE
+		this_state="${known_public_device_log[$known_addr]}"
+
+		#TEST IF THIS DEVICE MATCHES THE TARGET SCAN STATE
+		if [ "$this_state" == "1" ] && [[ $previously_connected_devices =~ .*$known_addr.* ]]; then
+			known_device_rssi=$(hcitool cc $known_addr && hcitool rssi $known_addr)
+
+			#KNOWN RSSI
+			known_device_rssi=${known_device_rssi//[^0-9]/}
+
+			publish_presence_message \
+				"id=$known_addr" \
+				"rssi=-$known_device_rssi"
+		fi
+	done
+}
 
 # ----------------------------------------------------------------------------------------
 # ASSEMBLE SCAN LISTS
@@ -566,6 +607,8 @@ determine_name() {
 	local address
 	address="$1"
 
+	[ -z "$address" ] && return 0
+
 	#IF IS NEW AND IS PUBLIC, SHOULD CHECK FOR NAME
 	local expected_name
 	expected_name="${known_public_device_name[$address]}"
@@ -629,6 +672,11 @@ btle_text_pid="$!"
 echo "> btle text pid = $btle_text_pid" >>.pids
 disown "$btle_text_pid"
 
+btle_listener &
+btle_listener_pid="$!"
+echo "> btle listener pid = $btle_listener_pid" >>.pids
+disown "$btle_listener_pid"
+
 mqtt_listener &
 mqtt_pid="$!"
 echo "> mqtt listener pid = $mqtt_pid" >>.pids
@@ -643,6 +691,11 @@ heartbeat_send &
 heartbeat_clock_pid="$!"
 echo "> heartbeat_clock_pid = $heartbeat_clock_pid" >>.pids
 disown "$heartbeat_clock_pid"
+
+periodic_trigger &
+periodic_clock_pid="$!"
+echo "> periodic clock pid = $periodic_clock_pid" >>.pids
+disown "$periodic_clock_pid"
 
 echo "================== BEGIN LOGGING =================="
 
@@ -856,6 +909,11 @@ while true; do
 				#RESTART SYSTEM
 				systemctl restart monitor.service
 			fi
+
+		elif [ "$cmd" == "TIME" ]; then
+
+			#FIND RSSI OF KNOWN DEVICES PREVIOUSLY CONNECTED
+			connectable_present_devices
 
 		elif [ "$cmd" == "REFR" ]; then
 
@@ -1085,7 +1143,7 @@ while true; do
 			esac
 
 			#ONLY PRINT IF WE HAVE A CHANCE OF A CERTAIN MAGNITUDE
-			[ -z "${blacklisted_devices[$mac]}" ] && [ "$abs_rssi_change" -gt "$PREF_RSSI_CHANGE_THRESHOLD" ] && log "${CYAN}[CMD-RSSI]	${NC}$data $expected_name ${GREEN}$cmd ${NC}RSSI: $rssi dBm ($change_type, changed $rssi_change) ${NC}" && rssi_updated=true
+			[ -n "$mac" ] && [ -z "${blacklisted_devices[$mac]}" ] && [ "$abs_rssi_change" -gt "$PREF_RSSI_CHANGE_THRESHOLD" ] && log "${CYAN}[CMD-RSSI]	${NC}$data $expected_name ${GREEN}$cmd ${NC}RSSI: $rssi dBm ($change_type, changed $rssi_change) ${NC}" && rssi_updated=true
 		fi
 
 		#**********************************************************************
@@ -1140,7 +1198,6 @@ while true; do
 					"manufacturer=$manufacturer" \
 					"type=$beacon_type" \
 					"rssi=$rssi" "power=$power" \
-					"adv_data=$adv_data" \
 					"flags=$flags" \
 					"oem=$oem_data" \
 					"movement=$change_type"
@@ -1159,7 +1216,6 @@ while true; do
 					"manufacturer=$manufacturer" \
 					"type=$beacon_type" \
 					"rssi=$rssi" \
-					"adv_data=$adv_data" \
 					"flags=$flags" \
 					"oem=$oem_data" \
 					"movement=$change_type"
@@ -1167,11 +1223,13 @@ while true; do
 
 		elif [ "$cmd" == "RAND" ] && [ "$is_new" == true ] && [ "$PREF_TRIGGER_MODE_ARRIVE" == false ] && [ -z "${blacklisted_devices[$mac]}" ]; then
 
-			#PROVIDE USEFUL LOGGING
-			log "${RED}[CMD-$cmd]${NC}	$data $pdu_header $rssi dBm [$manufacturer - $device_type ($flags, $oem_data)] (new device arrival trigger)"
-
 			#FLAG AND MFCG FILTER
 			if [[ $flags =~ $PREF_ARRIVE_TRIGGER_FILTER ]] || [[ $manufacturer =~ $PREF_ARRIVE_TRIGGER_FILTER ]]; then
+				#PROVIDE USEFUL LOGGING
+				log "${RED}[CMD-$cmd]${NC}	$data $pdu_header $rssi dBm"
+
+				#WE ARE PERFORMING THE FIRST ARRIVAL SCAN?
+				first_arrive_scan=false
 
 				#SCAN ONLY IF WE ARE NOT IN TRIGGER MODE
 				perform_arrival_scan
@@ -1180,7 +1238,6 @@ while true; do
 
 		#SHOUD WE PERFORM AN ARRIVAL SCAN AFTER THIS FIRST LOOP?
 		if [ "$first_arrive_scan" == true ]; then
-
 			perform_arrival_scan
 		fi
 
