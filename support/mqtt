@@ -17,23 +17,26 @@
 # ----------------------------------------------------------------------------------------
 
 #UTILITY FUNCTIONS
-function join_string () (IFS=$1; shift; printf "$*");
-function json_keypair () (join_string ":" "\"$1\"" "\"$2\"")
+function join_string() (
+	IFS=$1
+	shift
+	printf "$*"
+)
+function json_keypair() (join_string ":" "\"$1\"" "\"$2\"")
 
-#UNFORMAT A JASON STRING 
-function json_unformat (){
+#UNFORMAT A JASON STRING
+function json_unformat() {
 	#https://stackoverflow.com/a/38607019/225270
 	printf "$1" | grep -Eo '"[^"]*" *(: *([0-9]*|"[^"]*")[^{}\["]*|,)?|[^"\]\[\}\{]*|\{|\},?|\[|\],?|[0-9 ]*,?' | awk '{if ($0 ~ /^[}\]]/ ) offset-=4; printf "%*c%s\n", offset, " ", $0; if ($0 ~ /^[{\[]/) offset+=4}'
 }
 
 #FORMAT OF 'KEY=OBJECT' IN ARGV VALUES
-function json_format (){
+function json_format() {
 	local concat
 	local key
 	local object
-	for var in "$@"
-	do
-	    object="${var##*=}"
+	for var in "$@"; do
+		object="${var##*=}"
 		key="${var%%=*}"
 		concat="$concat,$(json_keypair "$key" "$object")"
 	done
@@ -41,77 +44,80 @@ function json_format (){
 }
 
 # ----------------------------------------------------------------------------------------
-# CLEAR RETAINED 
+# CLEAR RETAINED
 # ----------------------------------------------------------------------------------------
-mqtt_broker_clean (){
+mqtt_broker_clean() {
 	#MQTT LOOP
-	while read instruction; do 
+	while read instruction; do
 		#GET THE TOPIC PATH
 		local topic=$(echo "$instruction" | awk -F " {" '{print $1}')
 
 		#PUBLISH CLEARING MESSAGE
-		$mosquitto_pub_path $mqtt_version_append $mqtt_ca_file_append -r -n -h "$mqtt_address" -p "$mqtt_port" -u "$mqtt_user" -P "$mqtt_password" -t "$topic" 2>&1 
+		$mosquitto_pub_path $mqtt_version_append $mqtt_ca_file_append -r -n -h "$mqtt_address" -p "$mqtt_port" -u "$mqtt_user" -P "$mqtt_password" -t "$topic" 2>&1
 
-	done < <($(which mosquitto_sub) -I "$mqtt_publisher_identity" $mqtt_version_append $mqtt_ca_file_append -v -W 1 -h "$mqtt_address" -p "$mqtt_port" -u "$mqtt_user" -P "$mqtt_password" -t "$mqtt_topicpath/#" 2>&1 ) 
+	done < <($(which mosquitto_sub) -I "$mqtt_publisher_identity" $mqtt_version_append $mqtt_ca_file_append -v -W 1 -h "$mqtt_address" -p "$mqtt_port" -u "$mqtt_user" -P "$mqtt_password" -t "$mqtt_topicpath/#" 2>&1)
 }
 
 # ----------------------------------------------------------------------------------------
 # MQTT ANNOUNCE ONLINE
 # ----------------------------------------------------------------------------------------
-mqtt_announce_online(){
-	#ANNOUCEE HEALTH 
-	$mosquitto_pub_path -I "$mqtt_publisher_identity" $mqtt_version_append $mqtt_ca_file_append -h "$mqtt_address" -p "$mqtt_port" -u "$mqtt_user" -P "$mqtt_password" -t "$mqtt_topicpath/$mqtt_publisher_identity/status" -m "online" 2>&1 
+mqtt_announce_online() {
+	#ANNOUCEE HEALTH
+	$mosquitto_pub_path -I "$mqtt_publisher_identity" $mqtt_version_append $mqtt_ca_file_append -h "$mqtt_address" -p "$mqtt_port" -u "$mqtt_user" -P "$mqtt_password" -t "$mqtt_topicpath/$mqtt_publisher_identity/status" -m "online" 2>&1
 }
 
 # ----------------------------------------------------------------------------------------
 # MQTT LISTENER
 # ----------------------------------------------------------------------------------------
-mqtt_listener (){
+mqtt_listener() {
 	#ANNOUNCE ONLINE PRESENCE
 	mqtt_announce_online
 
-	while true; do 
+	while true; do
 		#MQTT LOOP
-		while read instruction; do 
-			echo "MQTT$instruction" > main_pipe 
-		done < <($(which mosquitto_sub) -I "$mqtt_publisher_identity" $mqtt_version_append $mqtt_ca_file_append -v -h "$mqtt_address" -p "$mqtt_port" -u "$mqtt_user" -P "$mqtt_password" -t "$mqtt_topicpath/scan/#" --will-topic "$mqtt_topicpath/$mqtt_publisher_identity/status" --will-payload "offline" 2>&1 ) 
+		while read instruction; do
+			echo "MQTT$instruction" | mqtt_pipe_send
+		done < <($(which mosquitto_sub) -I "$mqtt_publisher_identity" $mqtt_version_append $mqtt_ca_file_append -v -h "$mqtt_address" -p "$mqtt_port" -u "$mqtt_user" -P "$mqtt_password" -t "$mqtt_topicpath/scan/#" --will-topic "$mqtt_topicpath/$mqtt_publisher_identity/status" --will-payload "offline" 2>&1)
 
 		#LOG ERROR
 		log "[ERROR]	mqtt broker went offline. attempting subscribe in 10 seconds."
 		sleep 10
-	done 
+	done
 
 }
 
+mqtt_pipe_send() {
+	$(which mosquitto_pub) -I "$mqtt_publisher_identity" $mqtt_version_append $mqtt_ca_file_append -v -h "$mqtt_address" -p "$mqtt_port" -u "$mqtt_user" -P "$mqtt_password" -t "$mqtt_topicpath/$mqtt_publisher_identity/pipe"
+}
 
 # ----------------------------------------------------------------------------------------
 # PUBLISH RSSI MESSAGE
 # ----------------------------------------------------------------------------------------
 
-publish_rssi_message () {
-	if [ -n "$1" ]; then 
+publish_rssi_message() {
+	if [ -n "$1" ]; then
 		#TIMESTAMP
 		local stamp
 		local address
 		local message
 
 		#SET ISOLATED ADDRESS
-	    address="$1"
+		address="$1"
 		message="$2"
-		
+
 		local topic="$mqtt_topicpath/$mqtt_publisher_identity/$address/rssi"
 
 		#POST TO MQTT
 		$mosquitto_pub_path \
-		-I "$mqtt_publisher_identity" \
-		$mqtt_version_append \
-		$mqtt_ca_file_append \
-		-h "$mqtt_address" \
-		-p "$mqtt_port" \
-		-u "$mqtt_user" \
-		-P "$mqtt_password" \
-		-t "$topic" \
-		-m "$message" 2>&1
+			-I "$mqtt_publisher_identity" \
+			$mqtt_version_append \
+			$mqtt_ca_file_append \
+			-h "$mqtt_address" \
+			-p "$mqtt_port" \
+			-u "$mqtt_user" \
+			-P "$mqtt_password" \
+			-t "$topic" \
+			-m "$message" 2>&1
 	fi
 }
 
@@ -119,8 +125,8 @@ publish_rssi_message () {
 # PUBLISH MESSAGE
 # ----------------------------------------------------------------------------------------
 
-publish_presence_message () {
-	if [ -n "$1" ]; then 
+publish_presence_message() {
+	if [ -n "$1" ]; then
 		#TIMESTAMP
 		local stamp
 		local should_retain
@@ -129,24 +135,24 @@ publish_presence_message () {
 		local message
 
 		#SET ISOLATED ADDRESS
-	    isolated_address="${1##*=}"
+		isolated_address="${1##*=}"
 
 		#SET TIMESTAMP
 		stamp=$(date "+%a %b %d %Y %H:%M:%S GMT%z (%Z)")
-		
+
 		#CLEAR PREVIOUS RETAINED MESSAGE
 		retain_flag="false"
-		if [ "$PREF_SHOULD_RETAIN" == true ]; then 
+		if [ "$PREF_SHOULD_RETAIN" == true ]; then
 			should_retain="-r "
 			retain_flag="true"
-		fi 
+		fi
 
-		#ASSEMBLE 
-		message=$(\
-			json_format "$@"\
-		 	"retained=$retain_flag"\
-		  	"timestamp=$stamp"\
-		  	"version=$version"\
+		#ASSEMBLE
+		message=$(
+			json_format "$@" \
+				"retained=$retain_flag" \
+				"timestamp=$stamp" \
+				"version=$version"
 		)
 
 		#DEFINE THE TOPIC
@@ -154,82 +160,82 @@ publish_presence_message () {
 		[ "$PREF_MQTT_SINGLE_TOPIC_MODE" == true ] && topic="$mqtt_topicpath/$mqtt_publisher_identity"
 
 		#SHOULD FORMAT AS LETTERS/NUMBERS
-		[ "$PREF_FORMAT_MQTT" == true ] && topic=$(echo "$topic" | sed 's/[^A-Z0-9a-z/]//g') 
+		[ "$PREF_FORMAT_MQTT" == true ] && topic=$(echo "$topic" | sed 's/[^A-Z0-9a-z/]//g')
 
 		#DEBUGGING WITH SIMPLE
 		printf "%s\n" "${PURPLE}$topic${NC}"
 		printf "%s\n" "${PURPLE}$(json_unformat "$message")${NC}"
-		
+
 		#POST VERIFICATION THAT WE ARE STILL ONLINE; CURES AN ISSUE OF HOMEASSISTANT RESTARTING
 		mqtt_announce_online
 
 		#POST TO MQTT
 		$mosquitto_pub_path \
-		-I "$mqtt_publisher_identity" \
-		$should_retain \
-		$mqtt_version_append \
-		$mqtt_ca_file_append \
-		-h "$mqtt_address" \
-		-p "$mqtt_port" \
-		-u "$mqtt_user" \
-		-P "$mqtt_password" \
-		-t "$topic" \
-		-m "$message" 2>&1 
+			-I "$mqtt_publisher_identity" \
+			$should_retain \
+			$mqtt_version_append \
+			$mqtt_ca_file_append \
+			-h "$mqtt_address" \
+			-p "$mqtt_port" \
+			-u "$mqtt_user" \
+			-P "$mqtt_password" \
+			-t "$topic" \
+			-m "$message" 2>&1
 	fi
 }
 
-publish_cooperative_scan_message () {
+publish_cooperative_scan_message() {
 
 	#POST VERIFICATION THAT WE ARE STILL ONLINE; CURES AN ISSUE OF HOMEASSISTANT RESTARTING
 	mqtt_announce_online
 
-	if [ -n "$1" ] && [ -z "$2" ]; then 
-		#DEBUGGING 
-		(>&2 log "${PURPLE}$mqtt_topicpath/scan/$1${NC}")
+	if [ -n "$1" ] && [ -z "$2" ]; then
+		#DEBUGGING
+		(log >&2 "${PURPLE}$mqtt_topicpath/scan/$1${NC}")
 
 		#POST TO MQTT
 		$mosquitto_pub_path \
-		-I "$mqtt_publisher_identity" \
-		$mqtt_version_append \
-		$mqtt_ca_file_append \
-		-h "$mqtt_address" \
-		-p "$mqtt_port" \
-		-u "$mqtt_user" \
-		-P "$mqtt_password" \
-		-t "$mqtt_topicpath/scan/$1" \
-		-m "{\"identity\":\"$mqtt_publisher_identity\"}"  2>&1 
+			-I "$mqtt_publisher_identity" \
+			$mqtt_version_append \
+			$mqtt_ca_file_append \
+			-h "$mqtt_address" \
+			-p "$mqtt_port" \
+			-u "$mqtt_user" \
+			-P "$mqtt_password" \
+			-t "$mqtt_topicpath/scan/$1" \
+			-m "{\"identity\":\"$mqtt_publisher_identity\"}" 2>&1
 
-	elif [ -n "$1" ] && [ -n "$2" ]; then 
+	elif [ -n "$1" ] && [ -n "$2" ]; then
 
-		(>&2 log "${PURPLE}$mqtt_topicpath/$2/$1${NC}")
+		(log >&2 "${PURPLE}$mqtt_topicpath/$2/$1${NC}")
 
 		#POST TO MQTT
 		$mosquitto_pub_path \
-		-I "$mqtt_publisher_identity" \
-		$mqtt_version_append \
-		$mqtt_ca_file_append \
-		-h "$mqtt_address" \
-		-p "$mqtt_port" \
-		-u "$mqtt_user" \
-		-P "$mqtt_password" \
-		-t "$mqtt_topicpath/$2/$1" \
-		-m "{\"identity\":\"$mqtt_publisher_identity\"}"  2>&1 
+			-I "$mqtt_publisher_identity" \
+			$mqtt_version_append \
+			$mqtt_ca_file_append \
+			-h "$mqtt_address" \
+			-p "$mqtt_port" \
+			-u "$mqtt_user" \
+			-P "$mqtt_password" \
+			-t "$mqtt_topicpath/$2/$1" \
+			-m "{\"identity\":\"$mqtt_publisher_identity\"}" 2>&1
 
-	else 
-		(>&2 log "${PURPLE}$mqtt_topicpath/scan${NC}")
+	else
+		(log >&2 "${PURPLE}$mqtt_topicpath/scan${NC}")
 
 		$mosquitto_pub_path \
-		-I "$mqtt_publisher_identity" \
-		$mqtt_version_append \
-		$mqtt_ca_file_append \
-		-h "$mqtt_address" \
-		-p "$mqtt_port" \
-		-u "$mqtt_user" \
-		-P "$mqtt_password" \
-		-t "$mqtt_topicpath/scan" \
-		-m "{\"identity\":\"$mqtt_publisher_identity\"}" 2>&1 
-	fi 
+			-I "$mqtt_publisher_identity" \
+			$mqtt_version_append \
+			$mqtt_ca_file_append \
+			-h "$mqtt_address" \
+			-p "$mqtt_port" \
+			-u "$mqtt_user" \
+			-P "$mqtt_password" \
+			-t "$mqtt_topicpath/scan" \
+			-m "{\"identity\":\"$mqtt_publisher_identity\"}" 2>&1
+	fi
 }
 
-#SHOULD CLEAN? 
-[ "$PREF_CLEAN_MQTT" == true ]  && mqtt_broker_clean
+#SHOULD CLEAN?
+[ "$PREF_CLEAN_MQTT" == true ] && mqtt_broker_clean
