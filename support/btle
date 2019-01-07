@@ -83,7 +83,7 @@ btle_scanner() {
 		fi
 
 		#SEND SIGNAL THAT
-		echo "BOFF" | mqtt_pipe_send &
+		echo "BOFF" | mqtt_pipe_send
 		disown "$!"
 
 		#NEED DELAY TO BE SURE WE'RE NOT RESTARTING HARDWARE TOO QUICKLY

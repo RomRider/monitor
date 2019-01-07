@@ -400,7 +400,7 @@ perform_complete_scan() {
 			scan_duration=$((scan_end - scan_start))
 
 			#MARK THE ADDRESS AS SCANNED SO THAT IT CAN BE LOGGED ON THE MAIN PIPE
-			echo "SCAN$known_addr" | mqtt_pipe_send &
+			echo "SCAN$known_addr" | mqtt_pipe_send
 
 			#IF STATUS CHANGES TO PRESENT FROM NOT PRESENT, REMOVE FROM VERIFICATIONS
 			if [ -n "$name" ] && [ "$previous_state" == "0" ]; then
@@ -577,7 +577,7 @@ perform_departure_scan() {
 		scan_type=1
 	else
 		#HERE A DEPART SCAN IS ACTIVE; ENQUEUE ANOTHER DEPART SCAN AFTER 15-second delay
-		[ "$scan_type" == "0" ] && sleep 5 && echo "ENQUdepart" | mqtt_pipe_send &
+		[ "$scan_type" == "0" ] && sleep 5 && echo "ENQUdepart" | mqtt_pipe_send
 	fi
 
 }
@@ -609,7 +609,7 @@ perform_arrival_scan() {
 		scan_type=0
 	else
 		#HERE A DEPART SCAN IS ACTIVE; ENQUEUE ANOTHER DEPART SCAN AFTER 15-second delay
-		[ "$scan_type" == "1" ] && sleep 5 && echo "ENQUarrive" | mqtt_pipe_send &
+		[ "$scan_type" == "1" ] && sleep 5 && echo "ENQUarrive" | mqtt_pipe_send
 	fi
 }
 
