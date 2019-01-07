@@ -87,7 +87,7 @@ mqtt_listener() {
 }
 
 mqtt_pipe_send() {
-	$(which mosquitto_pub) -I "$mqtt_publisher_identity" $mqtt_version_append $mqtt_ca_file_append -v -h "$mqtt_address" -p "$mqtt_port" -u "$mqtt_user" -P "$mqtt_password" -t "$mqtt_topicpath/$mqtt_publisher_identity/pipe"
+	$(which mosquitto_pub) -I "$mqtt_publisher_identity" $mqtt_version_append $mqtt_ca_file_append -h "$mqtt_address" -p "$mqtt_port" -u "$mqtt_user" -P "$mqtt_password" -t "$mqtt_topicpath/$mqtt_publisher_identity/pipe"
 }
 
 # ----------------------------------------------------------------------------------------
