@@ -25,7 +25,7 @@
 # ----------------------------------------------------------------------------------------
 
 #VERSION NUMBER
-export version=0.1.799
+export version=0.1.814
 
 #CAPTURE ARGS IN VAR TO USE IN SOURCED FILE
 export RUNTIME_ARGS=("$@")
@@ -46,7 +46,6 @@ source './support/mqtt'
 source './support/log'
 source './support/data'
 source './support/btle'
-source './support/time'
 
 # ----------------------------------------------------------------------------------------
 # CLEANUP ROUTINE
@@ -106,6 +105,7 @@ scan_type=""
 
 #SCAN VARIABLES
 now=$(date +%s)
+last_rssi_scan=""
 last_arrival_scan=$((now - 25))
 last_depart_scan=$((now - 25))
 first_arrive_scan=true
@@ -194,16 +194,31 @@ connectable_present_devices() {
 		#GET STATE; ONLY SCAN FOR DEVICES WITH SPECIFIC STATE
 		this_state="${known_public_device_log[$known_addr]}"
 
+		[ -z "$this_state" ] && this_state=0
+
 		#TEST IF THIS DEVICE MATCHES THE TARGET SCAN STATE
-		if [ "$this_state" == "1" ] && [[ $previously_connected_devices =~ .*$known_addr.* ]]; then
+		if [ "$this_state" == "1" ] && [[ "$previously_connected_devices" =~ .*$known_addr.* ]]; then
+
 			known_device_rssi=$(hcitool cc $known_addr && hcitool rssi $known_addr)
 
 			#KNOWN RSSI
 			known_device_rssi=${known_device_rssi//[^0-9]/}
 
-			publish_presence_message \
-				"id=$known_addr" \
-				"rssi=-$known_device_rssi"
+			#IF NO NUMBERS, WE HAVE A HARDWARE FAULT
+			[ -z "$known_device_rssi" ] && continue
+
+			#PUBLISH MESSAGE TO RSSI SENSOR
+			publish_rssi_message \
+				"$known_addr" \
+				"-$known_device_rssi"
+
+			#REPORT
+			log "${CYAN}[CMD-RSSI]	${NC}$known_addr ${GREEN}$cmd ${NC}RSSI: $known_device_rssi dBm ${NC}"
+
+			#SET RSSI LOG
+			rssi_log[$known_addr]="$known_device_rssi"
+		else
+			echo "rejecting scan $this_state $known_addr $previously_connected_devices"
 		fi
 	done
 }
@@ -323,6 +338,9 @@ perform_complete_scan() {
 	#ITERATE THROUGH THE KNOWN DEVICES
 	local repetition
 	for repetition in $(seq 1 $repetitions); do
+
+		#SET DONE TO MAIN PIPE
+		echo "DONE" >main_pipe
 
 		#SET DEVICES
 		devices="$devices_next"
@@ -521,17 +539,15 @@ perform_complete_scan() {
 		echo "NAME$known_addr|" >main_pipe
 	done
 
+	#SET DONE TO MAIN PIPE
+	echo "DONE" >main_pipe
+
 	#GROUP SCAN FINISHED
 	log "${GREEN}[CMD-INFO]	${GREEN}**** Completed $transition_type scan. **** ${NC}"
-
-	#DELAY BEFORE CLEARNING THE MAIN PIPE
-	sleep 2
 
 	#PUBLISH END OF COOPERATIVE SCAN
 	[ "$PREF_MQTT_REPORT_SCAN_MESSAGES" == true ] && publish_cooperative_scan_message "$transition_type/end"
 
-	#SET DONE TO MAIN PIPE
-	echo "DONE" >main_pipe
 }
 
 # ----------------------------------------------------------------------------------------
@@ -681,21 +697,6 @@ mqtt_listener &
 mqtt_pid="$!"
 echo "> mqtt listener pid = $mqtt_pid" >>.pids
 disown "$mqtt_pid"
-
-refresh_databases &
-database_clock_pid="$!"
-echo "> database clock pid = $database_clock_pid" >>.pids
-disown "$database_clock_pid"
-
-heartbeat_send &
-heartbeat_clock_pid="$!"
-echo "> heartbeat_clock_pid = $heartbeat_clock_pid" >>.pids
-disown "$heartbeat_clock_pid"
-
-periodic_trigger &
-periodic_clock_pid="$!"
-echo "> periodic clock pid = $periodic_clock_pid" >>.pids
-disown "$periodic_clock_pid"
 
 echo "================== BEGIN LOGGING =================="
 
@@ -864,14 +865,21 @@ while true; do
 
 			if [[ $mqtt_topic_branch =~ .*ARRIVE.* ]]; then
 
-				log "${GREEN}[INSTRUCT] ${NC}mqtt trigger arrive ${NC}"
-				perform_arrival_scan
+				#IGNORE OR PASS MQTT INSTRUCTION?
+				scan_type_diff=$((timestamp - last_arrival_scan))
+				if [ "$scan_type_diff" -gt "$PREF_MINIMUM_TIME_BETWEEN_SCANS" ]; then
+					log "${GREEN}[INSTRUCT] ${NC}mqtt trigger arrive ${NC}"
+					perform_arrival_scan
+				fi
 
 			elif [[ $mqtt_topic_branch =~ .*DEPART.* ]]; then
-				log "${GREEN}[INSTRUCT] ${NC}mqtt trigger depart ${NC}"
 
-				#DEPART SCAN
-				perform_departure_scan
+				#IGNORE OR PASS MQTT INSTRUCTION?
+				scan_type_diff=$((timestamp - last_depart_scan))
+				if [ "$scan_type_diff" -gt "$PREF_MINIMUM_TIME_BETWEEN_SCANS" ]; then
+					log "${GREEN}[INSTRUCT] ${NC}mqtt trigger depart ${NC}"
+					perform_departure_scan
+				fi
 
 			elif [[ $mqtt_topic_branch =~ .*RESTART.* ]]; then
 				log "${GREEN}[INSTRUCT] ${NC}mqtt restart  ${NC}"
@@ -908,14 +916,25 @@ while true; do
 
 				#RESTART SYSTEM
 				systemctl restart monitor.service
+
+			elif [[ $mqtt_topic_branch =~ .*HEARTBEAT.* ]]; then
+				log "${GREEN}[INSTRUCT] ${NC}mqtt heartbeat ${NC}"
+				mqtt_announce_online
 			fi
 
-		elif [ "$cmd" == "TIME" ]; then
+		elif [ "$cmd" == "BOFF" ]; then
 
-			#FIND RSSI OF KNOWN DEVICES PREVIOUSLY CONNECTED
-			connectable_present_devices
+			#FIND RSSI OF KNOWN DEVICES PREVIOUSLY CONNECTED WHILE HICTOOL IS NOT
+			#SCANNING
+			difference_last_rssi=$((timestamp - last_rssi_scan))
 
-		elif [ "$cmd" == "REFR" ]; then
+			#ONLY EVER 5 MINUTES
+			if [ "$difference_last_rssi" -gt "100" ] || [ -z "$last_rssi_scan" ]; then
+				connectable_present_devices
+				last_rssi_scan=$(date +%s)
+			else
+				echo "> rejected $last_rssi_scan $difference_last_rssi"
+			fi
 
 			#**********************************************************************
 			#
@@ -990,18 +1009,18 @@ while true; do
 					[ -z "${blacklisted_devices[$key]}" ] && log "${BLUE}[DEL-PUBL]	${NC}PUBL/BEAC $key expired after $difference seconds ${NC}"
 
 					#REPORT PRESENCE OF DEVICE
-					[ "$PREF_BEACON_MODE" == true ] && [ -z "${blacklisted_devices[$key]}" ] && publish_presence_message "id=$key" "confidence=0" "name=$expected_name" "manufacturer=$local_manufacturer" "type=$beacon_type" "adv_data=$adv_data"
+					[ "$PREF_BEACON_MODE" == true ] && [ -z "${blacklisted_devices[$key]}" ] && publish_presence_message "id=$key" "confidence=0" "name=$expected_name" "manufacturer=$local_manufacturer" "type=$beacon_type"
 
 				else
 					#SHOULD REPORT A DROP IN CONFIDENCE?
 					percent_confidence=$((100 - difference * 100 / PREF_BEACON_EXPIRATION))
 
 					if [ "$PREF_REPORT_ALL_MODE" == true ]; then #REPORTING ALL
-						[ "$PREF_BEACON_MODE" == true ] && [ -z "${blacklisted_devices[$key]}" ] && publish_presence_message "id=$key" "confidence=$percent_confidence" "name=$expected_name" "manufacturer=$local_manufacturer" "type=$beacon_type" "rssi=$latest_rssi" "adv_data=$adv_data"
+						[ "$PREF_BEACON_MODE" == true ] && [ -z "${blacklisted_devices[$key]}" ] && publish_presence_message "id=$key" "confidence=$percent_confidence" "name=$expected_name" "manufacturer=$local_manufacturer" "type=$beacon_type" "rssi=$latest_rssi"
 					fi
 
 					#REPORT PRESENCE OF DEVICE ONLY IF IT IS ABOUT TO BE AWAY
-					[ "$PREF_BEACON_MODE" == true ] && [ -z "${blacklisted_devices[$key]}" ] && [ "$percent_confidence" -lt "50" ] && publish_presence_message "id=$key" "confidence=$percent_confidence" "name=$expected_name" "manufacturer=$local_manufacturer" "type=$beacon_type" "rssi=$latest_rssi" "adv_data=$adv_data"
+					[ "$PREF_BEACON_MODE" == true ] && [ -z "${blacklisted_devices[$key]}" ] && [ "$percent_confidence" -lt "50" ] && publish_presence_message "id=$key" "confidence=$percent_confidence" "name=$expected_name" "manufacturer=$local_manufacturer" "type=$beacon_type" "rssi=$latest_rssi"
 				fi
 			done
 
@@ -1053,6 +1072,7 @@ while true; do
 			mac=$(echo "$data" | awk -F "|" '{print $1}')
 			name=$(echo "$data" | awk -F "|" '{print $2}')
 			data="$mac"
+			rssi_latest="${rssi_log[$data]}"
 
 			#PREVIOUS STATE; SET DEFAULT TO UNKNOWN
 			previous_state="${known_public_device_log[$mac]}"
@@ -1096,9 +1116,6 @@ while true; do
 			[ -z "${public_device_log[$data]}" ] && is_new=true
 			public_device_log[$data]="$timestamp"
 			rssi_log[$data]="$rssi"
-
-		elif [ "$cmd" = "BEAT" ]; then
-			mqtt_announce_online
 		fi
 
 		#**********************************************************************
