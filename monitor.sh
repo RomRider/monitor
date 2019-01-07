@@ -1258,7 +1258,7 @@ while true; do
 			perform_arrival_scan
 		fi
 
-	done < <($(which mosquitto_sub) -I "$mqtt_publisher_identity" $mqtt_version_append $mqtt_ca_file_append -v -h "$mqtt_address" -p "$mqtt_port" -u "$mqtt_user" -P "$mqtt_password" -t "$mqtt_topicpath/$mqtt_publisher_identity/pipe" --will-topic "$mqtt_topicpath/$mqtt_publisher_identity/status" --will-payload "offline" 2>&1)
+	done < <($(which mosquitto_sub) -I "$mqtt_publisher_identity" $mqtt_version_append $mqtt_ca_file_append -h "$mqtt_address" -p "$mqtt_port" -u "$mqtt_user" -P "$mqtt_password" -t "$mqtt_topicpath/$mqtt_publisher_identity/pipe" 2>&1)
 
 	log "[ERROR]	mqtt broker went offline. attempting subscribe in 10 seconds."
 	sleep 10
