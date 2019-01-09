@@ -25,7 +25,7 @@
 # ----------------------------------------------------------------------------------------
 
 #VERSION NUMBER
-export version=0.1.814
+export version=0.1.815
 
 #CAPTURE ARGS IN VAR TO USE IN SOURCED FILE
 export RUNTIME_ARGS=("$@")
@@ -340,7 +340,7 @@ perform_complete_scan() {
 	for repetition in $(seq 1 $repetitions); do
 
 		#SET DONE TO MAIN PIPE
-		echo "DONE" | mqtt_pipe_send
+		printf "DONE\n" | mqtt_pipe_send
 
 		#SET DEVICES
 		devices="$devices_next"
@@ -400,13 +400,13 @@ perform_complete_scan() {
 			scan_duration=$((scan_end - scan_start))
 
 			#MARK THE ADDRESS AS SCANNED SO THAT IT CAN BE LOGGED ON THE MAIN PIPE
-			echo "SCAN$known_addr" | mqtt_pipe_send
+			printf "SCAN$known_addr\n" | mqtt_pipe_send &
 
 			#IF STATUS CHANGES TO PRESENT FROM NOT PRESENT, REMOVE FROM VERIFICATIONS
 			if [ -n "$name" ] && [ "$previous_state" == "0" ]; then
 
 				#PUSH TO MAIN POPE
-				echo "NAME$known_addr|$name" | mqtt_pipe_send
+				printf "NAME$known_addr|$name\n" | mqtt_pipe_send
 
 				#DEVICE FOUND; IS IT CHANGED? IF SO, REPORT
 				publish_presence_message "id=$known_addr" "confidence=100" "name=$expected_name" "manufacturer=$manufacturer" "type=KNOWN_MAC"
@@ -419,7 +419,7 @@ perform_complete_scan() {
 				devices_next=$(echo "$devices_next" | sed "s/$known_addr_stated//g;s/  */ /g")
 
 				#NEED TO UPDATE STATE TO MAIN THREAD
-				echo "NAME$known_addr|$name" | mqtt_pipe_send
+				printf "NAME$known_addr|$name\n" | mqtt_pipe_send
 
 				#NEVER SEEN THIS DEVICE; NEED TO PUBLISH STATE MESSAGE
 				publish_presence_message "id=$known_addr" "confidence=100" "name=$expected_name" "manufacturer=$manufacturer" "type=KNOWN_MAC"
@@ -475,7 +475,7 @@ perform_complete_scan() {
 				devices_next=$(echo "$devices_next" | sed "s/$known_addr_stated//g;s/  */ /g")
 
 				#PUBLISH A NOT PRESENT TO THE NAME PIPE
-				echo "NAME$known_addr|" | mqtt_pipe_send
+				printf "NAME$known_addr|\n" | mqtt_pipe_send
 
 				#COOPERATIVE SCAN ON RESTART
 				[ "$PREF_TRIGGER_MODE_REPORT_OUT" == true ] && publish_cooperative_scan_message "depart"
@@ -536,11 +536,11 @@ perform_complete_scan() {
 			publish_presence_message "id=$known_addr" "confidence=0" "name=$expected_name" "manufacturer=$manufacturer" "type=KNOWN_MAC"
 		fi
 
-		echo "NAME$known_addr|" | mqtt_pipe_send
+		printf "NAME$known_addr|\n" | mqtt_pipe_send
 	done
 
 	#SET DONE TO MAIN PIPE
-	echo "DONE" | mqtt_pipe_send
+	printf "DONE\n" | mqtt_pipe_send
 
 	#GROUP SCAN FINISHED
 	log "${GREEN}[CMD-INFO]	${GREEN}**** Completed $transition_type scan. **** ${NC}"
@@ -577,7 +577,7 @@ perform_departure_scan() {
 		scan_type=1
 	else
 		#HERE A DEPART SCAN IS ACTIVE; ENQUEUE ANOTHER DEPART SCAN AFTER 15-second delay
-		[ "$scan_type" == "0" ] && sleep 5 && echo "ENQUdepart" | mqtt_pipe_send
+		[ "$scan_type" == "0" ] && sleep 5 && printf "ENQUdepart\n" | mqtt_pipe_send &
 	fi
 
 }
@@ -609,7 +609,7 @@ perform_arrival_scan() {
 		scan_type=0
 	else
 		#HERE A DEPART SCAN IS ACTIVE; ENQUEUE ANOTHER DEPART SCAN AFTER 15-second delay
-		[ "$scan_type" == "1" ] && sleep 5 && echo "ENQUarrive" | mqtt_pipe_send
+		[ "$scan_type" == "1" ] && sleep 5 && printf "ENQUarrive\n" | mqtt_pipe_send &
 	fi
 }
 
@@ -881,6 +881,17 @@ while true; do
 					perform_departure_scan
 				fi
 
+			elif [[ $mqtt_topic_branch =~ .*RSSI.* ]]; then
+				log "${GREEN}[INSTRUCT] ${NC}mqtt RSSI update  ${NC}"
+
+				#SCAN FOR RSSI
+				difference_last_rssi=$((timestamp - last_rssi_scan))
+
+				#ONLY EVER 5 MINUTES
+				if [ "$difference_last_rssi" -gt "100" ] || [ -z "$last_rssi_scan" ]; then
+					connectable_present_devices
+					last_rssi_scan=$(date +%s)
+				fi
 			elif [[ $mqtt_topic_branch =~ .*RESTART.* ]]; then
 				log "${GREEN}[INSTRUCT] ${NC}mqtt restart  ${NC}"
 
@@ -932,8 +943,6 @@ while true; do
 			if [ "$difference_last_rssi" -gt "100" ] || [ -z "$last_rssi_scan" ]; then
 				connectable_present_devices
 				last_rssi_scan=$(date +%s)
-			else
-				echo "> rejected $last_rssi_scan $difference_last_rssi"
 			fi
 
 			#**********************************************************************

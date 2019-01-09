@@ -54,7 +54,7 @@ btle_packet_processor() {
 		packet=""
 
 		#SEND TO MAIN LOOP
-		[ ! -z "$UUID" ] && echo "BEAC$UUID|$MAJOR|$MINOR|$RSSI|$POWER|$received_mac_address" | mqtt_pipe_send
+		[ ! -z "$UUID" ] && printf "BEAC$UUID|$MAJOR|$MINOR|$RSSI|$POWER|$received_mac_address\n" | mqtt_pipe_send
 	fi
 }
 
@@ -83,7 +83,8 @@ btle_scanner() {
 		fi
 
 		#SEND SIGNAL THAT
-		echo "BOFF" | mqtt_pipe_send
+		printf "BOFF\n" | mqtt_pipe_send &
+		disown "$!"
 
 		#NEED DELAY TO BE SURE WE'RE NOT RESTARTING HARDWARE TOO QUICKLY
 		sleep 1
