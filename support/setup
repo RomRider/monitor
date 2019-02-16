@@ -8,7 +8,7 @@
 # GNU General Public License
 # http://github.com/andrewjfreyer/monitor
 #
-# SETUP NECESSARY FILES 
+# SETUP NECESSARY FILES
 #
 # ----------------------------------------------------------------------------------------
 
@@ -25,7 +25,7 @@ btmon_path=$(which btmon)
 bc_path=$(which bc)
 git_path=$(which git)
 
-#error CHECKING FOR MOSQUITTO PUBLICATION 
+#error CHECKING FOR MOSQUITTO PUBLICATION
 should_exit=false
 [ -z "$mosquitto_pub_path" ] && printf "%s\n" "${RED}error:${NC} required package 'mosquitto_pub' not found. please install 'mosquitto' and 'mosquitto-clients'." && should_exit=true
 [ -z "$mosquitto_sub_path" ] && printf "%s\n" "${RED}error:${NC} required package 'mosquitto_sub' not found. please install 'mosquitto' and 'mosquitto-clients'." && should_exit=true
@@ -33,19 +33,22 @@ should_exit=false
 [ -z "$hcidump_path" ] && printf "%s\n" "${RED}error:${NC} required package 'hcidump' not found. please install 'bluez-hcidump' (e.g., sudo apt-get install bluez-hcidump)." && should_exit=true
 [ -z "$bc_path" ] && printf "%s\n" "${RED}error:${NC} required package 'bc' not found. please install 'bc' (e.g., apt-get install bc)" && should_exit=true
 [ -z "$git_path" ] && printf "%s\n" "${ORANGE}warning:${NC} Recommended package 'git' not found. please consider installing for regular updates."
-[ ! -f /.dockerenv  ] && [ ! -z "$(which systemctl)" ] && [ ! -e "$service_path" ] && printf "%s\n" "${ORANGE}warning:${NC} monitor.service not installed. Install service? (y/n)" && read should_install
+[ ! -f /.dockerenv ] && [ ! -z "$(which systemctl)" ] && [ ! -e "$service_path" ] && printf "%s\n" "${ORANGE}warning:${NC} monitor.service not installed. Install service? (y/n)" && read should_install
 
 #BASE DIRECTORY REGARDLESS OF INSTALLATION; ELSE MANUALLY SET HERE
 base_directory=$(dirname "$(readlink -f "$0")")
 [ ! -z "$PREF_CONFIG_DIR" ] && printf "%s\n" "using $PREF_CONFIG_DIR as config dir" && base_directory="$PREF_CONFIG_DIR"
 
 #SET THE NAME CACHE IF IT DOESN'T EXIST
-[ ! -f "$base_directory/.public_name_cache" ] && printf "%s\n" "" > "$base_directory/.public_name_cache"
+[ ! -f "$base_directory/.public_name_cache" ] && printf "%s\n" "" >"$base_directory/.public_name_cache"
 [ ! -f "$base_directory/address_blacklist" ] && printf "%s\n" "#LIST MAC ADDRESSES TO IGNORE, ONE PER LINE:
-" > "$base_directory/address_blacklist"
+" >"$base_directory/address_blacklist"
 
 #BLACKLISTED ADDRESSES
 ADDRESS_BLACKLIST="$base_directory/address_blacklist"
+
+#MQTT ALIAS FILE
+ALIAS_CONFIG="$base_directory/mqtt_aliases"
 
 #----------------------------------------------------------------------------------------
 # CHECK MQTT CONFIGURATION FILES
@@ -54,14 +57,14 @@ ADDRESS_BLACKLIST="$base_directory/address_blacklist"
 #MQTT PREFERENCES
 MQTT_CONFIG="$base_directory/mqtt_preferences"
 
-if [ -f $MQTT_CONFIG ] ; then 
+if [ -f $MQTT_CONFIG ]; then
 	source $MQTT_CONFIG
 
 	#errorS
 	[ "$mqtt_address" == "0.0.0.0" ] && printf "%s\n" "${RED}error:${NC} please customize mqtt broker address in: mqtt_preferences" && should_exit=true
-	[ "$mqtt_user" == "username" ] && printf "%s\n" "${ORANGE}warning:${NC} for security purposes, please consider changing 'username' in: mqtt_preferences"
-	[ "$mqtt_password" == "password" ]&& printf "%s\n" "${ORANGE}warning:${NC} for security purposes, please consider changing 'password' in: mqtt_preferences"
-	[ "$mqtt_version" == "" ]&& printf "%s\n" "> ${GREEN}preference:${NC} using default mqtt protocol version" || printf "%s\n" "> ${GREEN}preference:${NC} using mqtt protocol version $mqtt_version"
+	[ "$mqtt_user" == "username" ] || [ -z "$mqtt_user" ] && printf "%s\n" "${ORANGE}warning:${NC} for security purposes, please consider changing 'username' in: mqtt_preferences"
+	[ "$mqtt_password" == "password" ] || [ -z "$mqtt_password" ] && printf "%s\n" "${ORANGE}warning:${NC} for security purposes, please consider changing 'password' in: mqtt_preferences"
+	[ "$mqtt_version" == "" ] && printf "%s\n" "> ${GREEN}preference:${NC} using default mqtt protocol version" || printf "%s\n" "> ${GREEN}preference:${NC} using mqtt protocol version $mqtt_version"
 	[ ! -f "$mqtt_certificate_path" ] && [ ! -z "$mqtt_certificate_path" ] && printf "%s\n" "${RED}error:${NC} please check mqtt certificate path in mqtt_preferences" && should_exit=true
 
 	#warningS
@@ -69,23 +72,35 @@ if [ -f $MQTT_CONFIG ] ; then
 	[ -z "$mqtt_publisher_identity" ] && printf "%s\n" "${ORANGE}warning:${NC} variable mqtt_publisher_identity does not appear in: mqtt_preferences. using hostname: $(hostname)". && mqtt_publisher_identity="$(hostname)"
 
 	#DEFINE CA APPEND
-	if [ -f "$mqtt_certificate_path" ]; then 
+	if [ -f "$mqtt_certificate_path" ]; then
 		#DEFINE APPEND TO USE FOR MQTT
 		mqtt_ca_file_append="--cafile $mqtt_certificate_path"
 	fi
 
 	#DEFINE CA APPEND
-	if [ ! -z "$mqtt_version" ]; then 
+	if [ ! -z "$mqtt_version" ]; then
 		#DEFINE APPEND TO USE FOR MQTT
 		mqtt_version_append="-V $mqtt_version"
 	fi
-else
-	printf "%s\n" "> mosquitto preferences file created. please customize." 
 
-printf "%s\n" "# ---------------------------
-#								
+	#CREDENTIALS AS AN APPEND VALUE
+	mqtt_credential_append="-P $mqtt_password -u $mqtt_user"
+
+	#DEFINE PASSWORD APPEND
+	if [ -z "$mqtt_user" ] || [ -z "$mqtt_password" ]; then
+		#DEFINE APPEND TO USE FOR MQTT
+		mqtt_credential_append=""
+
+		#WARNING
+		printf "%s\n" "${ORANGE}warning:${NC} operating in anonymous and unprotected mode for mqtt broker at $mqtt_address"
+	fi
+else
+	printf "%s\n" "> mosquitto preferences file created. please customize."
+
+	printf "%s\n" "# ---------------------------
+#
 # MOSQUITTO PREFERENCES
-#								
+#
 # ---------------------------
 
 # IP ADDRESS OR HOSTNAME OF MQTT BROKER
@@ -97,13 +112,13 @@ mqtt_user=username
 # MQTT BROKER PASSWORD (OR BLANK FOR NONE)
 mqtt_password=password
 
-# MQTT PUBLISH TOPIC ROOT 
+# MQTT PUBLISH TOPIC ROOT
 mqtt_topicpath=monitor
 
-# PUBLISHER IDENTITY 
+# PUBLISHER IDENTITY
 mqtt_publisher_identity=''
 
-# MQTT PORT 
+# MQTT PORT
 mqtt_port='1883'
 
 # MQTT CERTIFICATE FILE (LEAVE BLANK IF NONE)
@@ -112,11 +127,11 @@ mqtt_certificate_path=''
 #MQTT VERSION (LEAVE BLANK FOR DEFAULT; EXAMPLE: 'mqttv311')
 mqtt_version=''
 
-" > "$MQTT_CONFIG"
+" >"$MQTT_CONFIG"
 
 	#SET SHOULD EXIT
 	should_exit=true
-fi 
+fi
 
 #----------------------------------------------------------------------------------------
 # CHECK STATIC DEVICE CONFIGURATION FILES
@@ -125,12 +140,12 @@ fi
 #STATIC DEVICES PREFERENCES
 PUB_CONFIG="$base_directory/known_static_addresses"
 
-if [ -f "$PUB_CONFIG" ]; then 
-	#DOUBLECHECKS 
+if [ -f "$PUB_CONFIG" ]; then
+	#DOUBLECHECKS
 	[ ! -z "$(cat "$PUB_CONFIG" | grep "^00:00:00:00:00:00")" ] && printf "%s\n" " - ${RED}error:${NC} please customize public mac addresses in: known_static_addresses" && should_exit=true
 else
 	printf "%s\n" "> public MAC address list file created. please customize."
-	#IF NO PUBLIC ADDRESS FILE; LOAD 
+	#IF NO PUBLIC ADDRESS FILE; LOAD
 	printf "%s\n" "
 # ---------------------------
 #
@@ -138,12 +153,11 @@ else
 #
 # ---------------------------
 
-00:00:00:00:00:00 Nickname #comment" > "$PUB_CONFIG"
+00:00:00:00:00:00 Nickname #comment" >"$PUB_CONFIG"
 
 	#SET SHOULD EXIT
 	should_exit=true
-fi 
-
+fi
 
 #----------------------------------------------------------------------------------------
 # CHECK BEACON DEVICE CONFIGURATION FILES
@@ -152,38 +166,41 @@ fi
 #STATIC DEVICES PREFERENCES
 BEAC_CONFIG="$base_directory/known_beacon_addresses"
 
-if [ -f "$BEAC_CONFIG" ]; then 
-	#DOUBLECHECKS 
+if [ -f "$BEAC_CONFIG" ]; then
+	#DOUBLECHECKS
 	[ ! -z "$(cat "$BEAC_CONFIG" | grep "^00:00:00:00:00:00")" ] && printf "%s\n" " - ${RED}error:${NC} please customize beacon mac addresses in: known_beacon_addresses" && should_exit=true
 else
 	printf "%s\n" "> beacon MAC address list file created. please customize."
-	#IF NO PUBLIC ADDRESS FILE; LOAD 
+	#IF NO PUBLIC ADDRESS FILE; LOAD
 	printf "%s\n" "# ---------------------------
 #
 # BEACON MAC ADDRESS LIST; REQUIRES NAME
 #
 # 	Format: 00:00:00:00:00:00 Nickname #comments
-# ---------------------------" > "$BEAC_CONFIG"
-fi 
+# ---------------------------" >"$BEAC_CONFIG"
+fi
 
 #----------------------------------------------------------------------------------------
 # CHECK MONITOR.SERVICE (IF APPLICABLE)
 #
-#	CREDITS & CONTRIBUTIONS: x99percent 
+#	CREDITS & CONTRIBUTIONS: x99percent
 # ----------------------------------------------------------------------------------------
 
 #FILTER THE ARGV FROM THE PARENT SCRIPT TO REMOVE ONE-TIME USE VARIABLES
-FILTERED_ARGS=$(printf '%s\n' "$(IFS=' '; echo "${RUNTIME_ARGS[*]}")" | sed 's/ \?-d//g;s/ \?-u//g;s/&//g;s/  */ /g')
+FILTERED_ARGS=$(printf '%s\n' "$(
+	IFS=' '
+	echo "${RUNTIME_ARGS[*]}"
+)" | sed 's/ \?-d//g;s/ \?-u//g;s/&//g;s/  */ /g')
 
-#CHECK FOR CORRECT SERVICE; 
-if [ "$should_install" == "y" ] || [ "$PREF_UPDATE_SERVICE" == true ] ; then
+#CHECK FOR CORRECT SERVICE;
+if [ "$should_install" == "y" ] || [ "$PREF_UPDATE_SERVICE" == true ]; then
 	#REMOVE ALL INSTANCES
 	rm "$service_path" 2>&1 >/dev/null
 
 	#CHECK FOR SYSTEMCTL FILE
 	base_directory=$(dirname "$(readlink -f "$0")")
 
-printf "%s\n" "[Unit]
+	printf "%s\n" "[Unit]
 Description=Monitor Service
 After=network.target
 
@@ -195,23 +212,23 @@ Restart=always
 RestartSec=10
 
 [Install]
-WantedBy=multi-user.target network.target" > "$service_path"
+WantedBy=multi-user.target network.target" >"$service_path"
 
 	#PRINT RESULTS
-	[ "$PREF_UPDATE_SERVICE" == true ]  && printf "%s\n" "> monitor.service updated with arguments: $FILTERED_ARGS" 
+	[ "$PREF_UPDATE_SERVICE" == true ] && printf "%s\n" "> monitor.service updated with arguments: $FILTERED_ARGS"
 
 	sleep 3
 
 	#RELOAD DAEMON AND ENABLE SERVICE
 	systemctl daemon-reload
 	systemctl enable monitor.service
-fi 
+fi
 
 #----------------------------------------------------------------------------------------
-# BEFORE WE ECHO PREFERENCES, EXIT IF WE NEED TO 
+# BEFORE WE ECHO PREFERENCES, EXIT IF WE NEED TO
 # ----------------------------------------------------------------------------------------
 
-#ARE REQUIREMENTS MET? 
+#ARE REQUIREMENTS MET?
 [ "$should_exit" == true ] && exit 1
 
 #----------------------------------------------------------------------------------------
@@ -222,10 +239,10 @@ fi
 PREF_CONFIG="$base_directory/behavior_preferences"
 [ "$PREF_RESTORE_DEFAULTS" == true ] && rm "$PREF_CONFIG"
 
-#RESTORE DEFAULTS? 
-should_restore_defaults=false 
+#RESTORE DEFAULTS?
+should_restore_defaults=false
 
-if [ -f "$PREF_CONFIG" ]; then 
+if [ -f "$PREF_CONFIG" ]; then
 	source "$PREF_CONFIG"
 
 	preferences=$(printf "%s\n" "> ${GREEN}preference:${NC} minimum time between the same type of scan = $PREF_MINIMUM_TIME_BETWEEN_SCANS
@@ -244,7 +261,7 @@ if [ -f "$PREF_CONFIG" ]; then
 	PREF_INTERSCAN_DELAY=${PREF_INTERSCAN_DELAY:-3}
 	PREF_ARRIVAL_SCAN_ATTEMPTS=${PREF_ARRIVAL_SCAN_ATTEMPTS:-2}
 	PREF_DEPART_SCAN_ATTEMPTS=${PREF_DEPART_SCAN_ATTEMPTS:-3}
-	PREF_RANDOM_DEVICE_EXPIRATION_INTERVAL=${PREF_RANDOM_DEVICE_EXPIRATION_INTERVAL:-75}
+	PREF_RANDOM_DEVICE_EXPIRATION_INTERVAL=${PREF_RANDOM_DEVICE_EXPIRATION_INTERVAL:-180}
 	PREF_RSSI_CHANGE_THRESHOLD=${PREF_RSSI_CHANGE_THRESHOLD:-20}
 	PREF_RSSI_IGNORE_BELOW=${PREF_RSSI_IGNORE_BELOW:--75}
 	PREF_BEACON_EXPIRATION=${PREF_BEACON_EXPIRATION:-180}
@@ -264,25 +281,24 @@ if [ -f "$PREF_CONFIG" ]; then
 	PREF_STARTUP_SETTLE_TIME=${PREF_STARTUP_SETTLE_TIME:-45}
 	PREF_PASS_FILTER_PDU_TYPE=${PREF_PASS_FILTER_PDU_TYPE:-ADV_IND|ADV_SCAN_IND|ADV_NONCONN_IND|SCAN_RSP}
 
-
 	#IF PREFERENCES ARE NOT PROPERLY SET, EXIT
 	[ "$(printf "%s\n" "$preferences" | grep -c "error")" -gt "0" ] && printf "%s\n" "> ${ORANGE}warning:${NC} preferences error, using defaults. reset to defaults? [y/n]" && read -t 10 should_restore_defaults
 
 	#CONVERT TYPED VALUE TO TRUE OR FALSE
 	[[ "${should_restore_defaults,,}" =~ y|yes ]] && should_restore_defaults=true
 	[[ "${should_restore_defaults,,}" =~ n|no ]] && should_restore_defaults=false
-fi 
+fi
 
-#NEED TO RESTORE DEFAULTS? 
+#NEED TO RESTORE DEFAULTS?
 
-if [ ! -f "$PREF_CONFIG" ] || [ "$should_restore_defaults" == true ] ; then 
+if [ ! -f "$PREF_CONFIG" ] || [ "$should_restore_defaults" == true ]; then
 
-	printf "%s\n" "> default behavior preferences file created. please customize to your needs." 
+	printf "%s\n" "> default behavior preferences file created. please customize to your needs."
 
 	printf "%s\n" "# ---------------------------
-#								
+#
 # BEHAVIOR PREFERENCES
-#								
+#
 # ---------------------------
 
 #MAX RETRY ATTEMPTS FOR ARRIVAL
@@ -292,7 +308,7 @@ PREF_ARRIVAL_SCAN_ATTEMPTS=1
 PREF_DEPART_SCAN_ATTEMPTS=2
 
 #SECONDS UNTIL A BEACON IS CONSIDERED EXPIRED
-PREF_BEACON_EXPIRATION=180
+PREF_BEACON_EXPIRATION=240
 
 #MINIMUM TIME BEWTEEN THE SAME TYPE OF SCAN (ARRIVE SCAN, DEPART SCAN)
 PREF_MINIMUM_TIME_BETWEEN_SCANS=15
@@ -302,16 +318,14 @@ PREF_PASS_FILTER_ADV_FLAGS_ARRIVE=\".*\"
 PREF_PASS_FILTER_MANUFACTURER_ARRIVE=\".*\"
 
 #ARRIVE TRIGGER NEGATIVE FILTER(S)
-PREF_FAIL_FILTER_ADV_FLAGS_ARRIVE=\"NONE\" 
+PREF_FAIL_FILTER_ADV_FLAGS_ARRIVE=\"NONE\"
 PREF_FAIL_FILTER_MANUFACTURER_ARRIVE=\"NONE\"
 
-" > "$PREF_CONFIG"
+" >"$PREF_CONFIG"
 
 	#LOAD DEFAULT PREFERENCES
 	should_exit=true
-fi 
+fi
 
-
-#ARE REQUIREMENTS MET? 
+#ARE REQUIREMENTS MET?
 [ "$should_exit" == true ] && exit 1
-
