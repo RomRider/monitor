@@ -41,6 +41,23 @@ function json_format (){
 }
 
 # ----------------------------------------------------------------------------------------
+# MQTT ANNOUNCE ONLINE
+# ----------------------------------------------------------------------------------------
+mqtt_announce_online(){
+	#ANNOUCEE HEALTH 
+	$mosquitto_pub_path \
+	-I "$mqtt_publisher_identity" \
+	$mqtt_version_append \
+	$mqtt_ca_file_append \
+	-P "$mqtt_password" -u "$mqtt_user" \
+	-h "$mqtt_address" \
+	-p "$mqtt_port" \
+	-t "$mqtt_topicpath/$mqtt_publisher_identity/status" \
+	-m "online" 2>&1 
+}
+
+
+# ----------------------------------------------------------------------------------------
 # CLEAR RETAINED 
 # ----------------------------------------------------------------------------------------
 mqtt_broker_clean (){
@@ -50,32 +67,37 @@ mqtt_broker_clean (){
 
 	#MQTT LOOP
 	while read instruction; do 
+
+		#ERROR HANDLING
+		[[ ${instruction^^} =~ .*REFUSED.* ]] && return 0
 		
 		#EXTRACT THE TOPIC PATH WITHOUT RELYING ON FORMAT FLAG
-		topic_data=$(echo "$instruction" | sed 's/^'$mqtt_topicpath'\/scan\/[A-Za-z]\{2,\} //g')
-		topic_path=$(echo "$instruction" | sed 's/ '"$topic_data"'$//g')
+		topic_data=$(echo "$instruction" | sed 's/'"$mqtt_topicpath"'\/'"$mqtt_publisher_identity"'\/[0-9_:a-z-]\{2,\}//gi')
+		topic_path=$(echo "$instruction" | sed 's/'"$topic_data"'$//g')
+
+		[ -z "$topic_path" ] && continue
 
 		#PUBLISH CLEARING MESSAGE
 		$mosquitto_pub_path \
 		$mqtt_version_append \
 		$mqtt_ca_file_append \
+		-P "$mqtt_password" -u "$mqtt_user" \
 		-r \
 		-n \
 		-h "$mqtt_address" \
 		-p "$mqtt_port" \
-		-u "$mqtt_user" \
-		-P "$mqtt_password" \
 		-t "$topic_path" 2>&1 
 
-	done < <($(which mosquitto_sub) -I "$mqtt_publisher_identity" -v $mqtt_version_append $mqtt_ca_file_append -W 1 -h "$mqtt_address" -p "$mqtt_port" $mqtt_credential_append -t "$mqtt_topicpath/#" 2>&1 ) 
-}
-
-# ----------------------------------------------------------------------------------------
-# MQTT ANNOUNCE ONLINE
-# ----------------------------------------------------------------------------------------
-mqtt_announce_online(){
-	#ANNOUCEE HEALTH 
-	$mosquitto_pub_path -I "$mqtt_publisher_identity" $mqtt_version_append $mqtt_ca_file_append -h "$mqtt_address" -p "$mqtt_port" $mqtt_credential_append -t "$mqtt_topicpath/$mqtt_publisher_identity/status" -m "online" 2>&1 
+	done < <($(which mosquitto_sub) \
+		-I "$mqtt_publisher_identity" \
+		-v $mqtt_version_append \
+		$mqtt_ca_file_append \
+		-W 1 \
+		-h "$mqtt_address" \
+		-p "$mqtt_port" \
+		-P "$mqtt_password" \
+		-u "$mqtt_user" \
+		-t "$mqtt_topicpath/$mqtt_publisher_identity/#" 2>&1 ) 
 }
 
 # ----------------------------------------------------------------------------------------
@@ -91,8 +113,12 @@ mqtt_listener (){
 		#MQTT LOOP
 		while read instruction; do 
 
+			#ERROR HANDLING
+			[[ ${instruction^^} =~ .*REFUSED.* ]] && break
+
+
 			#EXTRACT THE TOPIC PATH WITHOUT RELYING ON FORMAT FLAG
-			topic_data=$(echo "$instruction" | sed 's/^'$mqtt_topicpath'\/scan\/[A-Za-z]\{4,\} //g')
+			topic_data=$(echo "$instruction" | sed 's/'"$mqtt_topicpath"'\/scan\/[0-9_:a-z/-]\{2,\} \?//gi')
 			topic_path=$(echo "$instruction" | sed 's/ '"$topic_data"'$//g')
 
 			#PRINT THE INSTRUCTION BACK TO THE MAIN THREAD
@@ -105,13 +131,14 @@ mqtt_listener (){
 			-h "$mqtt_address" \
 			-p "$mqtt_port" \
 			-v \
-			$mqtt_credential_append \
+			-P "$mqtt_password" -u "$mqtt_user" \
 			-t "$mqtt_topicpath/scan/#" \
 			--will-topic "$mqtt_topicpath/$mqtt_publisher_identity/status" \
 			--will-payload "offline" 2>&1 ) 
 
 		#LOG ERROR
-		log "[CMD-ERRO]	${RED}mqtt broker went offline.${NC} attempting subscribe in 10 seconds..."
+		log "[CMD-ERRO]	${RED}mqtt broker went offline, or a password/username combination was rejected.${NC} attempting subscribe in 10 seconds..."
+		
 		sleep 10
 	done 
 }
@@ -145,7 +172,7 @@ publish_rssi_message () {
 		-I "$mqtt_publisher_identity" \
 		$mqtt_version_append \
 		$mqtt_ca_file_append \
-		$mqtt_credential_append \
+		-P "$mqtt_password" -u "$mqtt_user" \
 		-h "$mqtt_address" \
 		-p "$mqtt_port" \
 		-t "$topic" \
@@ -167,6 +194,7 @@ publish_presence_message () {
 		local message
 		local existing_alias
 		local mqtt_topic_branch
+		local device_tracker_message
 
 		#SET ISOLATED ADDRESS
 	    isolated_address="${1##*=}"
@@ -200,30 +228,65 @@ publish_presence_message () {
 		#SHOULD FORMAT AS LETTERS/NUMBERS
 		[ "$PREF_FORMAT_MQTT" == true ] && topic=$(echo "$topic" | sed 's/[^A-Z0-9a-z/]//g') 
 
+		#ANNOUNCE ONLINE
+		mqtt_announce_online
+
+		#SHOULD WE BE REPORTING AS A DEVICE TRACKER? 
+		if [ "$PREF_DEVICE_TRACKER_REPORT" == true ]; then 
+
+			if [[ $message =~ \"confidence\":\"100\" ]]; then 
+				#OVERRIDE MESSAGE
+				device_tracker_message="home"
+			elif [[ $message =~ \"confidence\":\"0\" ]]; then 
+				#OVERRIDE MESSAGE
+ 				device_tracker_message="not_home"
+ 			else 
+ 				#NO MQTT MESSAGES IF NOT ZERO OR 100
+ 				device_tracker_message=""
+ 			fi
+
+
+ 			#ONLY POST A MESSAGE TO DEVICE TRACKER BOARD IF WE HAVE 
+ 			#A COMPLETE CONFIDENCE MESSAGE
+ 			if [ -n "$device_tracker_message" ]; then 
+	 			#PRINT FOR DEVICE TRACKER
+	 			printf "%s\n" "${PURPLE}$topic/device_tracker $device_tracker_message${NC}"
+
+	 			#POST TO MQTT
+				($mosquitto_pub_path \
+				-I "$mqtt_publisher_identity" \
+				$should_retain \
+				$mqtt_version_append \
+				$mqtt_ca_file_append \
+				-P "$mqtt_password" -u "$mqtt_user" \
+				-h "$mqtt_address" \
+				-p "$mqtt_port" \
+				-t "$topic/device_tracker" \
+				-m "$device_tracker_message" 2>&1)
+			fi
+ 		fi 
+
 		#DEBUGGING WITH SIMPLE
 		printf "%s\n" "${PURPLE}$topic${NC}"
-		printf "%s\n" "${PURPLE}$(json_unformat "$message")${NC}"
-		
-		#POST VERIFICATION THAT WE ARE STILL ONLINE; CURES AN ISSUE OF HOMEASSISTANT RESTARTING
-		mqtt_announce_online
+		printf "%s\n" "${PURPLE}$(json_unformat "$message")${NC}" 
 
 		#POST TO MQTT
 		($mosquitto_pub_path \
+		-P "$mqtt_password" -u "$mqtt_user" \
 		-I "$mqtt_publisher_identity" \
 		$should_retain \
 		$mqtt_version_append \
 		$mqtt_ca_file_append \
-		$mqtt_credential_append \
 		-h "$mqtt_address" \
 		-p "$mqtt_port" \
 		-t "$topic" \
-		-m "$message" 2>&1)
+		-m "$message" 2>&1)  	
 	fi
 }
 
 publish_cooperative_scan_message () {
 
-	#POST VERIFICATION THAT WE ARE STILL ONLINE; CURES AN ISSUE OF HOMEASSISTANT RESTARTING
+	#ANNOUNCE ONLINE
 	mqtt_announce_online
 
 	if [ -n "$1" ] && [ -z "$2" ]; then 
@@ -232,7 +295,7 @@ publish_cooperative_scan_message () {
 		-I "$mqtt_publisher_identity" \
 		$mqtt_version_append \
 		$mqtt_ca_file_append \
-		$mqtt_credential_append \
+		-P "$mqtt_password" -u "$mqtt_user" \
 		-h "$mqtt_address" \
 		-p "$mqtt_port" \
 		-t "$mqtt_topicpath/scan/$1" \
@@ -244,7 +307,7 @@ publish_cooperative_scan_message () {
 		-I "$mqtt_publisher_identity" \
 		$mqtt_version_append \
 		$mqtt_ca_file_append \
-		$mqtt_credential_append \
+		-P "$mqtt_password" -u "$mqtt_user" \
 		-h "$mqtt_address" \
 		-p "$mqtt_port" \
 		-t "$mqtt_topicpath/$2/$1" \
@@ -256,7 +319,7 @@ publish_cooperative_scan_message () {
 		-I "$mqtt_publisher_identity" \
 		$mqtt_version_append \
 		$mqtt_ca_file_append \
-		$mqtt_credential_append \
+		-P "$mqtt_password" -u "$mqtt_user" \
 		-h "$mqtt_address" \
 		-p "$mqtt_port" \
 		-t "$mqtt_topicpath/scan" \
